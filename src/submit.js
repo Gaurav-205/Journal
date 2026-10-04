@@ -129,11 +129,19 @@ async function runScheduledSubmission() {
   console.log(`Navigating to pre-filled Google Form URL...`);
 
   // 6. Launch Headless Browser with Restored Session
+  const userAgent =
+    process.env.CUSTOM_USER_AGENT ||
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
   let browser;
   try {
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+      ],
     });
   } catch (err) {
     if (err.message.includes('Executable doesn\'t exist') || err.message.includes('npx playwright install')) {
@@ -147,6 +155,14 @@ async function runScheduledSubmission() {
   try {
     const context = await browser.newContext({
       storageState: storagePath,
+      userAgent,
+      viewport: { width: 1280, height: 800 },
+    });
+
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+      });
     });
 
     const page = await context.newPage();
@@ -332,6 +348,7 @@ async function runScheduledSubmission() {
         if (config.dryRun) {
           console.log('\n[INFO] [DRY RUN / FORM FILL DISABLED] Submit button located. Form was filled & validated successfully!');
           console.log('Skipping actual form submission as DRY_RUN / DISABLE_SUBMIT is enabled.\n');
+          await context.storageState({ path: storagePath }).catch(() => {});
           await browser.close();
           process.exit(0);
         }
@@ -375,6 +392,7 @@ async function runScheduledSubmission() {
     if (config.dryRun) {
       await takeScreenshot('dryrun-final');
       console.log('\n[INFO] [DRY RUN / FORM FILL DISABLED] Form process completed in Dry Run mode.');
+      await context.storageState({ path: storagePath }).catch(() => {});
       await browser.close();
       process.exit(0);
     }
@@ -393,6 +411,8 @@ async function runScheduledSubmission() {
     if (confirmed) {
       recordSubmissionSuccess(config.timezone);
       await takeScreenshot('confirmation');
+      await context.storageState({ path: storagePath }).catch(() => {});
+      console.log('Updated session storage state saved successfully.');
       console.log('\n[SUCCESS] Journal entry successfully submitted to Google Form with verified session!');
     } else {
       const finalUrl = page.url();
@@ -401,6 +421,8 @@ async function runScheduledSubmission() {
       }
       recordSubmissionSuccess(config.timezone);
       await page.screenshot({ path: 'submit-result.png', fullPage: true });
+      await context.storageState({ path: storagePath }).catch(() => {});
+      console.log('Updated session storage state saved successfully.');
       console.log('\n[SUCCESS] Form submitted. Could not detect confirmation text — check submit-result.png to verify.');
     }
     await browser.close();

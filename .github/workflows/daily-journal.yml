@@ -26,7 +26,17 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      - name: Decode storageState.json from Secret
+      - name: Restore updated session state from cache
+        id: session-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: storageState.json
+          key: google-session-${{ github.run_id }}
+          restore-keys: |
+            google-session-
+
+      - name: Decode storageState.json from Secret (fallback)
+        if: steps.session-cache.outputs.cache-hit != 'true'
         env:
           STORAGE_STATE_BASE64: ${{ secrets.STORAGE_STATE_BASE64 }}
         run: |
@@ -35,7 +45,7 @@ jobs:
             exit 1
           fi
           node -e 'fs.writeFileSync("storageState.json", Buffer.from(process.env.STORAGE_STATE_BASE64.replace(/\s+/g, ""), "base64"))'
-          echo "storageState.json restored successfully."
+          echo "storageState.json restored successfully from secret."
 
       - name: Get current date in target timezone
         id: date
@@ -69,3 +79,10 @@ jobs:
         with:
           path: .last_submission.json
           key: journal-submitted-${{ steps.date.outputs.today }}
+
+      - name: Save updated session state to cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: storageState.json
+          key: google-session-${{ github.run_id }}

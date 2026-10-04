@@ -35,7 +35,11 @@ async function runInteractiveLogin() {
   try {
     browser = await chromium.launch({
       headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+      ],
     });
   } catch (err) {
     if (err.message.includes('Executable doesn\'t exist') || err.message.includes('npx playwright install')) {
@@ -47,7 +51,21 @@ async function runInteractiveLogin() {
     throw err;
   }
 
-  const context = await browser.newContext();
+  const userAgent =
+    process.env.CUSTOM_USER_AGENT ||
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
+  const context = await browser.newContext({
+    userAgent,
+    viewport: { width: 1280, height: 800 },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+    });
+  });
+
   const page = await context.newPage();
 
   await page.goto(targetUrl);
