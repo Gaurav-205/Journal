@@ -17,7 +17,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -74,14 +74,14 @@ jobs:
         run: npm start
 
       - name: Save daily submission state to cache
-        if: success()
+        if: success() && hashFiles('.last_submission.json') != ''
         uses: actions/cache/save@v4
         with:
           path: .last_submission.json
           key: journal-submitted-${{ steps.date.outputs.today }}
 
       - name: Save updated session state to cache
-        if: success()
+        if: success() && hashFiles('storageState.json') != ''
         uses: actions/cache/save@v4
         with:
           path: storageState.json
