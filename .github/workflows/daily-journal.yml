@@ -1,6 +1,8 @@
 name: Daily Coursework Journal Submission
 
 on:
+  push:
+    branches: [ main ]
   schedule:
     # 4:00 PM IST (16:00 IST) = 10:30 AM UTC, Monday–Friday only
     - cron: '30 10 * * 1-5'
