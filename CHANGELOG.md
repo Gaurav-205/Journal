@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [2.0.1] - 2026-11-04
+
+### Fixed
+- The "Continue current draft?" dialog was not dismissed, so it swallowed the next click and threw off page counting.
+- Fields already holding text were skipped, so a restored draft could be filed instead of the written entry. Written answers now always win.
+
+---
+
 ## [2.0.0] - 2026-11-04
 
 ### Changed

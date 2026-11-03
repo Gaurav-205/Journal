@@ -1,6 +1,6 @@
 {
   "name": "automated-coursework-journal",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Files your written daily coursework journal entries to Google Forms using an authenticated Playwright session.",
   "type": "module",
   "main": "src/submit.js",

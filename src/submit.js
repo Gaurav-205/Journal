@@ -86,16 +86,21 @@ async function throwOnValidationErrors(page) {
   }
 }
 
-async function fillCurrentPage(page, answers, pageNum) {
-  // 0. Handle "Continue current draft?" dialog modal if present
-  const continueBtn = page.locator(
-    'div[role="dialog"] button:has-text("Continue"), div[role="dialog"] div[role="button"]:has-text("Continue"), div[role="dialog"] button:has-text("Restore"), div[role="dialog"] div[role="button"]:has-text("Restore")'
-  ).first();
-  if (await visibleWithin(continueBtn, 1500)) {
-    console.log('  [ACTION] Dismissing "Continue current draft?" popup modal...');
-    await continueBtn.click({ force: true }).catch(() => {});
-    await page.waitForTimeout(500);
+// "Continue" keeps the current page's prefilled answers rather than the saved draft. Left open,
+// the dialog swallows the next click. It can appear a few seconds after load.
+async function dismissDraftDialog(page, timeout) {
+  // Google renders it as a bare <a> with no link role, next to a hidden copy of the dialog.
+  const continueBtn = page.locator('[role="alertdialog"] a').filter({ hasText: /^\s*Continue\s*$/ }).locator('visible=true').first();
+  if (await visibleWithin(continueBtn, timeout)) {
+    console.log('  [ACTION] Dismissing "Continue current draft?" dialog...');
+    await continueBtn.click();
+    await continueBtn.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(1000); // the form resets the email checkbox just after closing
   }
+}
+
+async function fillCurrentPage(page, answers, pageNum) {
+  await dismissDraftDialog(page, 3000);
 
   // 1. Email consent checkbox
   const emailCheckboxes = page.locator('div[role="checkbox"], input[type="checkbox"]');
@@ -145,9 +150,6 @@ async function fillCurrentPage(page, answers, pageNum) {
     if (!(await field.isVisible().catch(() => false))) continue;
     position++;
 
-    const currentVal = await field.inputValue().catch(() => '');
-    if (currentVal.trim() !== '') continue;
-
     // Inspect field attributes & parent question container text
     const { name, heading } = await field
       .evaluate((el) => {
@@ -161,7 +163,11 @@ async function fillCurrentPage(page, answers, pageNum) {
 
     const key = pickFieldKey({ name, heading, pageNum, position }, Object.keys(answers));
     const answer = key ? answers[key] : '';
+    // A restored draft can hold old text, so the written answer always wins.
+    const currentVal = await field.inputValue().catch(() => '');
+    if (answer && currentVal === answer) continue;
     if (!answer) {
+      if (currentVal.trim() !== '') continue;
       console.warn(`  [WARN] No written answer for field "${heading.slice(0, 60)}" (page ${pageNum}). Left blank.`);
       continue;
     }
@@ -179,6 +185,8 @@ async function fillCurrentPage(page, answers, pageNum) {
  * @returns {Promise<'submitted'|'dry-run'>}
  */
 export async function fillAndSubmitForm(page, { answers, dryRun = false, takeScreenshot = async () => {} }) {
+  page.setDefaultTimeout(30000); // Playwright clicks otherwise wait forever
+
   const submitButton = page
     .getByRole('button', { name: /^submit$|^submit response$|^send$|^bhejein$/i })
     .or(page.locator('div[role="button"]:has-text("Submit")'))
@@ -227,6 +235,7 @@ export async function fillAndSubmitForm(page, { answers, dryRun = false, takeScr
     console.log(`  -> Clicking Next button (page ${pageCount})...`);
     await takeScreenshot(`p${pageCount}-before-next`);
     await page.waitForTimeout(500); // let overlays/tooltips disappear
+    await dismissDraftDialog(page, 200);
     await nextButton.click({ force: true }); // force: bypass pointer-events blockers
     await page.waitForLoadState('domcontentloaded').catch(() => {});
     await page.waitForTimeout(1500);

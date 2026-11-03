@@ -93,6 +93,24 @@ test('fills every page with the right answer and verifies submission', { skip },
   assert.ok(records.at(2).url.includes('done=1'));
 });
 
+test('written answers replace stale draft text', { skip }, async () => {
+  const draft = pages[`${RESPONSE_URL}?p=2`].replace('<textarea></textarea>', '<textarea>Old draft text</textarea>');
+  const { page, records } = await open({ ...pages, [`${RESPONSE_URL}?p=2`]: draft });
+  await fillAndSubmitForm(page, { answers: ANSWERS });
+  assert.deepStrictEqual(records.at(1).values, ['Tasks', 'Solved', 'Unsolved', 'Plan']);
+});
+
+test('dismisses a draft dialog that appears after load', { skip }, async () => {
+  const dialog = `<script>setTimeout(() => {
+    document.body.insertAdjacentHTML('beforeend',
+      '<div role="alertdialog" style="display:none"><a>Continue</a></div><div id="scrim" style="position:fixed;inset:0;background:#0008" role="alertdialog"><div role="presentation"><a onclick="document.getElementById(\\'scrim\\').remove()">Continue</a></div></div>');
+  }, 1000);</script>`;
+  const { page, records } = await open({ ...pages, [FORM_URL]: pages[FORM_URL] + dialog });
+  const result = await fillAndSubmitForm(page, { answers: ANSWERS });
+  assert.strictEqual(result, 'submitted');
+  assert.deepStrictEqual(records.at(1).values, ['Tasks', 'Solved', 'Unsolved', 'Plan']);
+});
+
 test('dry run never clicks Submit', { skip }, async () => {
   const { page, records } = await open();
   const result = await fillAndSubmitForm(page, { answers: ANSWERS, dryRun: true });
