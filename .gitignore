@@ -3,8 +3,9 @@ node_modules/
 
 # Environment and Secrets
 .env
-.env.local
-storageState.json
+.env.*
+!.env.example
+storageState*.json
 .last_submission.json
 
 # Playwright / Testing

@@ -35,11 +35,7 @@ async function runInteractiveLogin() {
   try {
     browser = await chromium.launch({
       headless: false,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-      ],
+      args: ['--disable-blink-features=AutomationControlled'],
     });
   } catch (err) {
     if (err.message.includes('Executable doesn\'t exist') || err.message.includes('npx playwright install')) {
@@ -78,6 +74,13 @@ async function runInteractiveLogin() {
 
   await promptEnter('--> Press [ENTER] in this terminal AFTER you have successfully signed in & loaded the form: ');
 
+  // Saving before sign-in would produce a session that only fails later, in CI.
+  const cookies = await context.cookies('https://accounts.google.com/');
+  if (!cookies.some((c) => /^(SID|__Secure-\dPSID)$/.test(c.name))) {
+    await browser.close();
+    throw new Error('Not signed in to Google yet, so no session was saved. Run "npm run login" again.');
+  }
+
   // Scan form DOM for entry IDs & field names
   console.log('\nScanning form for entry IDs...');
   const detectedFields = await page.evaluate(() => {
@@ -105,7 +108,8 @@ async function runInteractiveLogin() {
     items.forEach((item) => {
       const paramsStr = item.getAttribute('data-params');
       if (paramsStr) {
-        const matches = paramsStr.match(/\[(\d{7,12}),/g);
+        // [[id, is the entry ID; a single [id, at the start is the question's item ID.
+        const matches = paramsStr.match(/\[\[(\d{7,12}),/g);
         if (matches) {
           matches.forEach((m) => {
             const num = m.match(/\d+/)?.[0];
@@ -145,6 +149,7 @@ async function runInteractiveLogin() {
     fs.mkdirSync(storageDir, { recursive: true });
   }
   await context.storageState({ path: storagePath });
+  fs.chmodSync(storagePath, 0o600); // holds live Google session cookies
 
   console.log(`\n[SUCCESS] Session storage state successfully saved to: ${storagePath}`);
 

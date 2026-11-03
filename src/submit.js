@@ -1,9 +1,12 @@
 import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
-import { config, DEFAULT_ANSWERS } from './config.js';
-import { generateCommitSummary, getFormattedToday } from './summarizer.js';
+import { fileURLToPath } from 'url';
+import { config } from './config.js';
+import { ATTENDANCE_ENTRY, QUESTION_KEYS, getFormattedToday, loadEntryAnswers } from './entry.js';
 import { buildPrefilledUrl } from './urlBuilder.js';
+
+const MAX_PAGES = 15;
 
 /**
  * Returns the path to the daily submission state file.
@@ -48,22 +51,194 @@ export function recordSubmissionSuccess(timezone = 'Asia/Kolkata', referenceDate
 }
 
 /**
- * Checks if today is Sunday in the target timezone.
+ * Decides which written answer a text field receives. Returns null when the field
+ * cannot be identified, so unknown questions are left blank and fail form validation
+ * instead of receiving an unrelated answer.
  */
-export function isSunday(timezone = 'Asia/Kolkata', referenceDate = new Date()) {
-  const refDate = referenceDate instanceof Date && !isNaN(referenceDate.getTime()) ? referenceDate : new Date();
-  let tz = timezone;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-  } catch {
-    tz = 'Asia/Kolkata';
+export function pickFieldKey({ name = '', heading = '', pageNum, position }, knownKeys = QUESTION_KEYS) {
+  for (const key of knownKeys) {
+    const id = key.replace('entry.', '');
+    if (new RegExp(`\\b${id}\\b`).test(name)) return key;
   }
 
-  const dayStr = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    weekday: 'short',
-  }).format(refDate);
-  return dayStr === 'Sun';
+  const h = heading.toLowerCase();
+  if (/challenge|problem/.test(h)) {
+    if (/\bnot\b|cannot|n't\b|unable|carrying/.test(h)) return 'entry.199221807';
+    if (/solve|\bdid\b/.test(h)) return 'entry.1874357572';
+  }
+  if (/\bplans?\b|next day|upcoming/.test(h)) return 'entry.1546753981';
+  if (/\btasks?\b|\bkey\b|\bwork/.test(h)) return 'entry.32162408';
+
+  // Position fallback: the form asks all four questions, in this order, on page 2.
+  if (pageNum === 2) return QUESTION_KEYS[position] ?? null;
+  return null;
+}
+
+// Locator.isVisible() ignores its timeout and returns immediately, so waiting needs waitFor().
+function visibleWithin(locator, timeout) {
+  return locator.waitFor({ state: 'visible', timeout }).then(() => true, () => false);
+}
+
+async function throwOnValidationErrors(page) {
+  const errors = await page.locator('[role="listitem"] [role="alert"]').filter({ hasText: /\S/ }).allInnerTexts();
+  if (errors.length > 0) {
+    throw new Error(`Form rejected the answers: ${[...new Set(errors)].join('; ')}`);
+  }
+}
+
+async function fillCurrentPage(page, answers, pageNum) {
+  // 0. Handle "Continue current draft?" dialog modal if present
+  const continueBtn = page.locator(
+    'div[role="dialog"] button:has-text("Continue"), div[role="dialog"] div[role="button"]:has-text("Continue"), div[role="dialog"] button:has-text("Restore"), div[role="dialog"] div[role="button"]:has-text("Restore")'
+  ).first();
+  if (await visibleWithin(continueBtn, 1500)) {
+    console.log('  [ACTION] Dismissing "Continue current draft?" popup modal...');
+    await continueBtn.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(500);
+  }
+
+  // 1. Email consent checkbox
+  const emailCheckboxes = page.locator('div[role="checkbox"], input[type="checkbox"]');
+  const cbCount = await emailCheckboxes.count().catch(() => 0);
+  for (let i = 0; i < cbCount; i++) {
+    const cb = emailCheckboxes.nth(i);
+    const ariaChecked = await cb.getAttribute('aria-checked').catch(() => 'false');
+    const isChecked = ariaChecked === 'true' || (await cb.isChecked().catch(() => false));
+    if (!isChecked) {
+      const containerText = await cb
+        .evaluate((el) => {
+          const container = el.closest('[role="listitem"], label') || el.parentElement;
+          return `${el.getAttribute('aria-label') || ''} ${container?.innerText || container?.textContent || ''}`.toLowerCase();
+        })
+        .catch(() => '');
+
+      if (containerText.includes('email') && containerText.includes('record')) {
+        console.log('  [ACTION] Checking email consent checkbox...');
+        await cb.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(300);
+      }
+    }
+  }
+
+  // 2. Radio option: only ever the exact written answer, never a fuzzy match
+  const attendanceOption = answers[ATTENDANCE_ENTRY];
+  if (attendanceOption) {
+    const radio = page.getByRole('radio', { name: String(attendanceOption), exact: true }).first();
+    if (await visibleWithin(radio, 1000)) {
+      if ((await radio.getAttribute('aria-checked').catch(() => 'false')) !== 'true') {
+        console.log(`  [ACTION] Selecting configured option "${attendanceOption}"`);
+        await radio.click({ force: true });
+        await page.waitForTimeout(500);
+      }
+    }
+  }
+
+  // 3. Fill empty text inputs / textareas. Email inputs are excluded: no written answer fits them.
+  const textFields = page.locator(
+    'textarea, input[type="text"]:not([readonly]), input[type="url"]:not([readonly]), input:not([type]):not([readonly])'
+  );
+  const fieldCount = await textFields.count().catch(() => 0);
+
+  let position = -1;
+  for (let i = 0; i < fieldCount; i++) {
+    const field = textFields.nth(i);
+    if (!(await field.isVisible().catch(() => false))) continue;
+    position++;
+
+    const currentVal = await field.inputValue().catch(() => '');
+    if (currentVal.trim() !== '') continue;
+
+    // Inspect field attributes & parent question container text
+    const { name, heading } = await field
+      .evaluate((el) => {
+        const box = el.closest('[role="listitem"], .Qr7Oae, .M7eMe') || el.parentElement;
+        return {
+          name: el.getAttribute('name') || el.closest('[data-params]')?.getAttribute('data-params') || '',
+          heading: box?.querySelector('[role="heading"], .M7eMe, .hoL3id, label, legend, span')?.innerText || box?.innerText || '',
+        };
+      })
+      .catch(() => ({ name: '', heading: '' }));
+
+    const key = pickFieldKey({ name, heading, pageNum, position }, Object.keys(answers));
+    const answer = key ? answers[key] : '';
+    if (!answer) {
+      console.warn(`  [WARN] No written answer for field "${heading.slice(0, 60)}" (page ${pageNum}). Left blank.`);
+      continue;
+    }
+
+    console.log(`  [FIELD] Filled [${key}] (Page ${pageNum})`);
+    await field.fill(answer);
+  }
+}
+
+/**
+ * Walks the loaded form page by page and submits it (unless dryRun).
+ * Throws unless the final submission was verified, so callers can only record
+ * success for a response Google actually accepted.
+ *
+ * @returns {Promise<'submitted'|'dry-run'>}
+ */
+export async function fillAndSubmitForm(page, { answers, dryRun = false, takeScreenshot = async () => {} }) {
+  const submitButton = page
+    .getByRole('button', { name: /^submit$|^submit response$|^send$|^bhejein$/i })
+    .or(page.locator('div[role="button"]:has-text("Submit")'))
+    .first();
+  const nextButton = page
+    .getByRole('button', { name: /^next$/i })
+    .or(page.locator('div[role="button"]:has-text("Next")'))
+    .first();
+
+  let pageCount = 1;
+  await fillCurrentPage(page, answers, pageCount);
+  await takeScreenshot('initial');
+
+  for (let remaining = MAX_PAGES; remaining > 0; remaining--) {
+    await visibleWithin(submitButton.or(nextButton).first(), 5000);
+
+    if (await submitButton.isVisible().catch(() => false)) {
+      await takeScreenshot(`p${pageCount}-submit-page`);
+
+      if (dryRun) {
+        console.log('\n[INFO] [DRY RUN / FORM FILL DISABLED] Submit button located. Form was filled & validated successfully!');
+        console.log('Skipping actual form submission as DRY_RUN / DISABLE_SUBMIT is enabled.\n');
+        return 'dry-run';
+      }
+
+      console.log('Submit button found. Submitting form response...');
+      await submitButton.click();
+      await submitButton.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+      await takeScreenshot('after-submit');
+
+      await throwOnValidationErrors(page);
+      const finalUrl = page.url();
+      if (finalUrl.includes('accounts.google.com')) {
+        throw new Error('Session expired during submission. Please run "npm run login" again.');
+      }
+      // Submit is gone and Google answered on /formResponse. The confirmation wording is form-specific,
+      // and the phrase "recorded" also appears on the unsubmitted form, so text is not checked.
+      if ((await submitButton.isVisible().catch(() => false)) || !finalUrl.includes('/formResponse')) {
+        throw new Error(`Submission could not be verified (URL: ${finalUrl}). Check the form's responses before re-running.`);
+      }
+      return 'submitted';
+    }
+
+    if (!(await nextButton.isVisible().catch(() => false))) break;
+
+    console.log(`  -> Clicking Next button (page ${pageCount})...`);
+    await takeScreenshot(`p${pageCount}-before-next`);
+    await page.waitForTimeout(500); // let overlays/tooltips disappear
+    await nextButton.click({ force: true }); // force: bypass pointer-events blockers
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(1500);
+    await throwOnValidationErrors(page);
+
+    pageCount++;
+    await fillCurrentPage(page, answers, pageCount);
+  }
+
+  throw new Error(
+    `No Submit button reached after ${pageCount} page(s); nothing was submitted. The form may be closed, already answered, or changed layout.`
+  );
 }
 
 async function runScheduledSubmission() {
@@ -73,14 +248,8 @@ async function runScheduledSubmission() {
     console.log('[WARN] [DRY RUN MODE ENABLED] Form submission is disabled via configuration (DRY_RUN / DISABLE_SUBMIT).\n');
   }
 
-  // 1. Skip on Sundays
-  if (isSunday(config.timezone)) {
-    console.log(`[SKIP] Today is Sunday in ${config.timezone}. Skipping journal submission as scheduled.`);
-    process.exit(0);
-  }
-
-  // 1b. Skip if already submitted today (unless force/allowMultipleSubmissions is set)
-  if (!config.allowMultipleSubmissions && hasAlreadySubmittedToday(config.timezone)) {
+  // 1. Skip if already submitted today (unless force/allowMultipleSubmissions is set; a dry run submits nothing)
+  if (!config.dryRun && !config.allowMultipleSubmissions && hasAlreadySubmittedToday(config.timezone)) {
     const today = getFormattedToday(config.timezone);
     console.log(`[SKIP] Coursework journal has already been submitted today (${today}) in ${config.timezone}. Skipping duplicate execution.`);
     process.exit(0);
@@ -94,41 +263,23 @@ async function runScheduledSubmission() {
     process.exit(1);
   }
 
-  // 3. Validate configuration
-  if (!config.formId) {
-    console.error('[ERROR] FORM_ID environment variable is missing.');
-    process.exit(1);
+  // 3. File only what was written for today. No entry means nothing to report.
+  const today = getFormattedToday(config.timezone);
+  const answers = loadEntryAnswers(today);
+  if (!answers) {
+    console.log(`[SKIP] No entry at entries/${today}.json. Nothing submitted.`);
+    process.exit(0);
   }
 
-  // 4. Fetch Commit Activity & Generate Summary
-  let journalSummaryText = '';
-  if (config.githubOwner && config.githubRepo) {
-    console.log(`Fetching commit summary for ${config.githubOwner}/${config.githubRepo}...`);
-    journalSummaryText = await generateCommitSummary({
-      owner: config.githubOwner,
-      repo: config.githubRepo,
-      username: config.githubUsername,
-      token: config.commitReadToken,
-      timezone: config.timezone,
-    });
-  } else {
-    journalSummaryText = await generateCommitSummary({ timezone: config.timezone });
-  }
-
-  console.log('\n--- Generated Journal Entry ---');
-  console.log(journalSummaryText);
-  console.log('-------------------------------\n');
-
-  // 5. Construct Pre-filled Form URL
+  // 4. Construct Pre-filled Form URL
   const prefilledUrl = buildPrefilledUrl({
     formId: config.formId,
-    entryMap: config.entryMap,
-    journalSummaryText,
+    answers,
   });
 
   console.log(`Navigating to pre-filled Google Form URL...`);
 
-  // 6. Launch Headless Browser with Restored Session
+  // 5. Launch Headless Browser with Restored Session
   const userAgent =
     process.env.CUSTOM_USER_AGENT ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -191,240 +342,25 @@ async function runScheduledSubmission() {
     async function takeScreenshot(label) {
       screenshotIndex++;
       const filename = path.join(screenshotsDir, `page-${String(screenshotIndex).padStart(2, '0')}-${label}.png`);
-      await page.screenshot({ path: filename, fullPage: true }).catch(() => {});
-      console.log(`  [SCREENSHOT] Saved: ${filename}`);
+      await page
+        .screenshot({ path: filename, fullPage: true })
+        .then(() => console.log(`  [SCREENSHOT] Saved: ${filename}`))
+        .catch((err) => console.warn(`  [WARN] Screenshot failed: ${err.message}`));
     }
 
-    // Helper: fill all required fields on the current page section
-    async function fillCurrentPage(currentPageNum = pageCount) {
-      // 0. Handle "Continue current draft?" dialog modal if present
-      const continueBtn = page.locator(
-        'div[role="dialog"] button:has-text("Continue"), div[role="dialog"] div[role="button"]:has-text("Continue"), div[role="dialog"] button:has-text("Restore"), div[role="dialog"] div[role="button"]:has-text("Restore")'
-      ).first();
-      if (await continueBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
-        console.log('  [ACTION] Dismissing "Continue current draft?" popup modal...');
-        await continueBtn.click({ force: true }).catch(() => {});
-        await page.waitForTimeout(500);
-      }
+    const result = await fillAndSubmitForm(page, {
+      answers,
+      dryRun: config.dryRun,
+      takeScreenshot,
+    });
 
-      // 1. Email consent checkbox
-      const emailCheckboxes = page.locator('div[role="checkbox"], input[type="checkbox"]');
-      const cbCount = await emailCheckboxes.count().catch(() => 0);
-      for (let i = 0; i < cbCount; i++) {
-        const cb = emailCheckboxes.nth(i);
-        const ariaChecked = await cb.getAttribute('aria-checked').catch(() => 'false');
-        const isChecked = ariaChecked === 'true' || (await cb.isChecked().catch(() => false));
-        if (!isChecked) {
-          const containerText = await cb
-            .evaluate((el) => {
-              const container = el.closest('[role="listitem"], .Qr7Oae, .M7eMe, label, form') || el.parentElement;
-              return container ? (container.innerText || container.textContent || '').toLowerCase() : (el.innerText || el.textContent || '').toLowerCase();
-            })
-            .catch(() => '');
-
-          if (containerText.includes('email') || containerText.includes('record')) {
-            console.log('  [ACTION] Checking email consent checkbox...');
-            await cb.click({ force: true }).catch(() => {});
-            await page.waitForTimeout(300);
-          }
-        }
-      }
-
-      // 2. Working day radio option
-      const workingDayRadio = page
-        .locator('[role="radio"][aria-label*="present" i], [role="radio"][aria-label*="working" i], [role="radio"][data-value*="present" i], [role="radio"][data-value*="working" i]')
-        .first();
-      if (await workingDayRadio.isVisible({ timeout: 2000 }).catch(() => false)) {
-        const selected = await workingDayRadio.getAttribute('aria-checked').catch(() => 'false');
-        if (selected !== 'true') {
-          console.log('  [ACTION] Selected working day radio option');
-          await workingDayRadio.click({ force: true });
-          await page.waitForTimeout(500);
-        }
-      }
-
-      // 3. Fill empty text inputs / textareas with exact mapped entry response
-      const textFields = page.locator(
-        'textarea, input[type="text"]:not([readonly]), input[type="email"]:not([readonly]), input[type="url"]:not([readonly]), input:not([type]):not([readonly])'
-      );
-      const fieldCount = await textFields.count().catch(() => 0);
-
-      for (let i = 0; i < fieldCount; i++) {
-        const field = textFields.nth(i);
-        if (await field.isVisible().catch(() => false)) {
-          const currentVal = await field.inputValue().catch(() => '');
-          if (!currentVal || currentVal.trim() === '') {
-            // Inspect field attributes & parent question container text
-            const fieldDetails = await field
-              .evaluate((el) => {
-                const box = el.closest('[role="listitem"], .Qr7Oae, .M7eMe, form') || el.parentElement;
-                const name = el.getAttribute('name') || box?.getAttribute('data-params') || '';
-                const heading = (
-                  box?.querySelector('[role="heading"], .M7eMe, .hoL3id, label, legend, span')?.innerText ||
-                  box?.innerText ||
-                  ''
-                ).toLowerCase();
-                return { name, heading };
-              })
-              .catch(() => ({ name: '', heading: '' }));
-
-            let targetEntryKey = '';
-            const fieldName = fieldDetails.name;
-            const heading = fieldDetails.heading;
-
-            // Direct entry name / attribute parameter matching
-            if (fieldName.includes('1874357572')) targetEntryKey = 'entry.1874357572';
-            else if (fieldName.includes('199221807')) targetEntryKey = 'entry.199221807';
-            else if (fieldName.includes('1546753981')) targetEntryKey = 'entry.1546753981';
-            else if (fieldName.includes('32162408')) targetEntryKey = 'entry.32162408';
-
-            // Heading title pattern matching if name attribute is non-specific
-            if (!targetEntryKey && heading) {
-              if ((heading.includes('challenge') || heading.includes('problem')) && (heading.includes('not') || heading.includes('carrying') || heading.includes('unable'))) {
-                targetEntryKey = 'entry.199221807';
-              } else if ((heading.includes('challenge') || heading.includes('problem')) && (heading.includes('solve') || heading.includes('did'))) {
-                targetEntryKey = 'entry.1874357572';
-              } else if (heading.includes('plan') || heading.includes('next day') || heading.includes('upcoming')) {
-                targetEntryKey = 'entry.1546753981';
-              } else if (heading.includes('task') || heading.includes('key') || heading.includes('work')) {
-                targetEntryKey = 'entry.32162408';
-              }
-            }
-
-            // Fallback matching by page number / field position
-            if (!targetEntryKey) {
-              if (currentPageNum === 2 || i === 0) targetEntryKey = 'entry.32162408';
-              else if (currentPageNum === 3 && i === 0) targetEntryKey = 'entry.1874357572';
-              else if (currentPageNum === 3 && i === 1) targetEntryKey = 'entry.199221807';
-              else if (currentPageNum === 4) targetEntryKey = 'entry.1546753981';
-              else targetEntryKey = 'entry.32162408';
-            }
-
-            // Resolve response string for targetEntryKey
-            let answerToUse = '';
-            if (typeof config.entryMap === 'object' && config.entryMap !== null && config.entryMap[targetEntryKey]) {
-              answerToUse = config.entryMap[targetEntryKey];
-            } else if (DEFAULT_ANSWERS[targetEntryKey]) {
-              answerToUse = DEFAULT_ANSWERS[targetEntryKey];
-            }
-
-            // For Key Tasks (entry.32162408), append commit log / journal summary if available
-            if (targetEntryKey === 'entry.32162408' && journalSummaryText && !answerToUse.includes('GitHub Commit Log')) {
-              answerToUse = journalSummaryText;
-            }
-
-            if (!answerToUse) {
-              answerToUse = journalSummaryText || 'Worked on assigned tasks as per daily plan.';
-            }
-
-            console.log(`  [FIELD] Filled [${targetEntryKey}] (Page ${currentPageNum}): "${answerToUse.substring(0, 45)}..."`);
-            await field.fill(answerToUse).catch(() => {});
-          }
-        }
-      }
-    }
-
-    // Fill page 1 fields on initial load
-    let pageCount = 1;
-    await fillCurrentPage(pageCount);
-    await takeScreenshot('initial');
-
-    // Loop through form pages (handles Multi-Page Forms with Next buttons)
-    let maxPages = 15;
-    
-    while (maxPages > 0) {
-      maxPages--;
-
-      // Check if Submit button is visible
-      const submitButton = page
-        .getByRole('button', { name: /^submit$|^submit response$|^send$|^bhejein$/i })
-        .or(page.locator('div[role="button"]:has-text("Submit")'))
-        .or(page.locator('div[role="button"]:has-text("submit")'))
-        .first();
-
-      if (await submitButton.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await takeScreenshot(`p${pageCount}-submit-page`);
-        
-        if (config.dryRun) {
-          console.log('\n[INFO] [DRY RUN / FORM FILL DISABLED] Submit button located. Form was filled & validated successfully!');
-          console.log('Skipping actual form submission as DRY_RUN / DISABLE_SUBMIT is enabled.\n');
-          await context.storageState({ path: storagePath }).catch(() => {});
-          await browser.close();
-          process.exit(0);
-        }
-
-        console.log('Submit button found. Submitting form response...');
-        await submitButton.click();
-        await page.waitForTimeout(3000);
-        await takeScreenshot('after-submit');
-        break;
-      }
-
-      // Check if Next button is visible
-      const nextButton = page
-        .getByRole('button', { name: /^next$/i })
-        .or(page.locator('div[role="button"]:has-text("Next")'))
-        .first();
-
-      if (await nextButton.isVisible({ timeout: 2000 }).catch(() => false)) {
-        console.log(`  -> Clicking Next button (page ${pageCount})...`);
-        
-        // Take screenshot BEFORE clicking Next
-        await takeScreenshot(`p${pageCount}-before-next`);
-
-        // Wait for any overlay/tooltip to disappear
-        await page.waitForTimeout(500);
-        
-        // Click Next with force to bypass pointer-events blockers
-        await nextButton.click({ force: true });
-        await page.waitForLoadState('domcontentloaded').catch(() => {});
-        await page.waitForTimeout(1000);
-
-        pageCount++;
-        
-        // Fill any required fields on the new page
-        await fillCurrentPage(pageCount);
-      } else {
-        break;
-      }
-    }
-
-    if (config.dryRun) {
-      await takeScreenshot('dryrun-final');
-      console.log('\n[INFO] [DRY RUN / FORM FILL DISABLED] Form process completed in Dry Run mode.');
-      await context.storageState({ path: storagePath }).catch(() => {});
-      await browser.close();
-      process.exit(0);
-    }
-
-    // 7. Verify Success Confirmation
-    console.log('Waiting for confirmation text...');
-    await page.waitForTimeout(2000);
-
-    const confirmationTextLocator = page
-      .getByText(/recorded|submitted|response has been recorded|thank you|your response/i)
-      .or(page.locator('.freebirdFormviewerFunctioningresponseConfirmationText'))
-      .first();
-
-    const confirmed = await confirmationTextLocator.isVisible({ timeout: 15000 }).catch(() => false);
-
-    if (confirmed) {
+    if (result === 'submitted') {
       recordSubmissionSuccess(config.timezone);
       await takeScreenshot('confirmation');
-      await context.storageState({ path: storagePath }).catch(() => {});
-      console.log('Updated session storage state saved successfully.');
-      console.log('\n[SUCCESS] Journal entry successfully submitted to Google Form with verified session!');
-    } else {
-      const finalUrl = page.url();
-      if (finalUrl.includes('accounts.google.com')) {
-        throw new Error('Session expired during submission. Please run "npm run login" again.');
-      }
-      recordSubmissionSuccess(config.timezone);
-      await page.screenshot({ path: 'submit-result.png', fullPage: true });
-      await context.storageState({ path: storagePath }).catch(() => {});
-      console.log('Updated session storage state saved successfully.');
-      console.log('\n[SUCCESS] Form submitted. Could not detect confirmation text — check submit-result.png to verify.');
+      console.log('\n[SUCCESS] Journal entry submitted and verified.');
     }
+    await context.storageState({ path: storagePath }).catch(() => {});
+    console.log('Updated session storage state saved successfully.');
     await browser.close();
     process.exit(0);
   } catch (error) {
@@ -446,6 +382,6 @@ async function runScheduledSubmission() {
   }
 }
 
-if (process.argv[1] && (process.argv[1].endsWith('submit.js') || process.argv[1].includes('submit'))) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runScheduledSubmission();
 }

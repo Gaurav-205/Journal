@@ -7,7 +7,26 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License" /></a>
 </p>
 
-An automated daily coursework journal submission engine built with **Node.js (ES Modules)** and **Playwright Chromium**. It populates multi-page Google Forms using authenticated session persistence (`storageState.json`) and executes scheduled submissions via **GitHub Actions**.
+Files the daily coursework journal entries **you write** to a Google Form, using **Node.js (ES Modules)**, **Playwright Chromium**, and **GitHub Actions**. Commit an entry for today and it is submitted within minutes. With no entry, nothing is filed: the tool never reports attendance or work on its own.
+
+## Writing a Daily Entry
+
+Create `entries/YYYY-MM-DD.json` for today's date and push it to `main`:
+
+```json
+{
+  "status": "present",
+  "tasks": "What were your key tasks for the day?",
+  "solved": "What challenges/problems did you solve today?",
+  "unsolved": "What challenges/problems were you NOT able to solve today?",
+  "plan": "What is your plan for the next day?"
+}
+```
+
+On a working day when you were on leave or absent, use `{ "status": "leave" }`. On campus holidays and unscheduled days, write nothing. The form rejects backdated entries, so an entry only files on its own date. Incomplete entries fail the run and are not filed.
+
+> [!WARNING]
+> Pushed entries are as visible as your repository. In a public repository anyone can read them, so keep yours private if they should stay between you and your program.
 
 ---
 
@@ -26,7 +45,7 @@ An automated daily coursework journal submission engine built with **Node.js (ES
 
 ## Personal Production Deployment (Fork & Automate Guide)
 
-If you are not an admin of this repository, you can deploy your own **100% automated personal submission engine** in production on GitHub Actions for free in 5 steps:
+If you are not an admin of this repository, you can deploy your own personal copy on GitHub Actions for free in 5 steps:
 
 1. **Fork this repository**: Click the **Fork** button at top right to copy this repository to your GitHub account (`github.com/YOUR_USERNAME/Journal`).
 2. **Enable GitHub Actions**: In your forked repository, go to **Actions** -> click **"I understand my workflows, go ahead and enable them"**.
@@ -36,25 +55,26 @@ If you are not an admin of this repository, you can deploy your own **100% autom
    - Run `npm run login`, sign in to Google, and press **[ENTER]** in terminal to generate `storageState.json`.
 4. **Base64 Encode Session File**:
    - **PowerShell (Windows)**: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("storageState.json"))`
-   - **macOS / Linux**: `base64 -w 0 storageState.json`
+   - **macOS / Linux**: `base64 < storageState.json | tr -d '\n'`
 5. **Add Repository Secret**:
    - In your fork on GitHub, go to **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**.
    - Create secret `STORAGE_STATE_BASE64` and paste your base64 string.
-   - *(Optional Secrets)*: `FORM_ID`, `GH_USERNAME`, `GH_TOKEN`, `TIMEZONE`.
+   - *(Optional Secrets)*: `FORM_ID`, `TIMEZONE`.
 
 > [!TIP]
-> **Fully Automated Execution**: Once configured, your fork's GitHub Actions workflow runs on schedule every Monday-Friday at 4:00 PM IST (10:30 UTC) in production without any manual input required! You can also click **Actions** -> **Daily Coursework Journal Submission** -> **Run workflow** to trigger manual submissions anytime.
+> Once configured, pushing an entry runs the workflow. To retry or test, use **Actions** -> **Daily Coursework Journal Submission** -> **Run workflow**, with **dry_run** to fill without submitting.
 
 ---
 
 ## Key Features
 
-- **Automated Daily Journaling**: Automatically populates daily coursework journal responses using configured default answers.
+- **Written Entries Only**: Submits exactly what you wrote in `entries/YYYY-MM-DD.json`. No entry, no submission.
 - **Session Persistence**: Restores Google account session cookies via Playwright `storageState.json`, bypassing login prompts and preserving verified email consent.
 - **Once-Per-Day Guard**: Tracks daily submission state via `.last_submission.json` and GitHub Actions cache to prevent duplicate form submissions if the job executes multiple times a day. Pass `--force` or `ALLOW_MULTIPLE_SUBMISSIONS=true` to override.
 - **Multi-Page Form Navigation**: Automatically handles Google Form section transitions (`Next`), radio selections ("Present / Working Day"), draft popups ("Continue current draft?"), and mandatory email consent checkboxes.
 - **Dry-Run Safety Controls**: Includes safety controls (`DRY_RUN=true` / `DISABLE_SUBMIT=true`) to validate form filling without triggering actual submissions.
-- **Schedule & Sunday Skip**: Configured for scheduled GitHub Actions cron jobs (Mon–Fri at 16:00 IST / 10:30 UTC), automatically skipping Sunday executions.
+- **Leave Reporting**: `{ "status": "leave" }` selects the leave option and sends no work answers.
+- **Verified Submissions**: A run succeeds only when Google accepted the final page. Validation errors, closed forms, and unverifiable submits exit non-zero and are not recorded as submitted.
 - **Debug Screenshots**: Automatically captures page-by-page progress screenshots to simplify DOM element troubleshooting.
 
 ---
@@ -64,13 +84,14 @@ If you are not an admin of this repository, you can deploy your own **100% autom
 ```
 .
 ├── .github/workflows/
-│   └── daily-journal.yml     # Scheduled daily GitHub Actions workflow (Mon-Fri 10:30 UTC / 4:00 PM IST)
+│   └── daily-journal.yml     # Files an entry when one is pushed to entries/
+├── entries/                  # Your daily entries (YYYY-MM-DD.json)
 ├── scripts/
 │   ├── login.js              # One-time interactive Google authentication script
 │   └── diagnose-form.js      # Diagnostic script for inspecting form DOM elements & checkboxes
 ├── src/
 │   ├── config.js             # Environment variables & default entry map loader
-│   ├── summarizer.js         # GitHub REST API commit summarizer module
+│   ├── entry.js              # Loads and validates entries/YYYY-MM-DD.json
 │   ├── urlBuilder.js         # Pre-filled Google Form URL builder
 │   └── submit.js             # Headless Playwright runner & idempotency guard
 ├── test/
@@ -120,12 +141,6 @@ Example `.env` configuration:
 # Target Google Form ID (extracted from /d/e/FORM_ID/viewform)
 FORM_ID=1FAIpQLSc8RRUAG8n8nPB9dm21m_MxwHQ-JuDnEj7GnvwEkWXykkKFuQ
 
-# Optional: GitHub credentials for auto-generating commit summaries
-GH_OWNER=your-github-username
-GH_REPO=your-repository-name
-GH_USERNAME=your-github-username
-GH_TOKEN=your_github_personal_access_token
-
 # Timezone & Session settings
 TIMEZONE=Asia/Kolkata
 STORAGE_STATE_PATH=storageState.json
@@ -155,14 +170,14 @@ Google Forms requiring user sign-in cannot be filled anonymously. Follow these s
 
 ---
 
-## GitHub Actions Setup (Scheduled Daily Runs)
+## GitHub Actions Setup
 
-To run daily submissions automatically on GitHub Actions:
+To file entries from GitHub Actions:
 
 1. **Encode your local `storageState.json` to base64**:
    - **Linux / macOS**:
      ```bash
-     base64 -w 0 storageState.json
+     base64 < storageState.json | tr -d '\n'
      ```
    - **Windows (PowerShell)**:
      ```powershell
@@ -172,12 +187,12 @@ To run daily submissions automatically on GitHub Actions:
    Go to your GitHub repository **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**:
    - `STORAGE_STATE_BASE64`: Paste the generated base64 string.
    - `FORM_ID` *(Optional)*: Override standard Form ID.
-   - `DISABLE_SUBMIT` *(Optional)*: Set to `true` to test in CI without submitting.
-3. **Workflow Schedule**:
-   The workflow `.github/workflows/daily-journal.yml` runs automatically Monday through Friday at 10:30 UTC (4:00 PM IST). You can also trigger it manually via the **Actions** tab using `workflow_dispatch`.
+   To test in CI without submitting, use **Run workflow** and tick **dry_run**.
+3. **When It Runs**:
+   The workflow `.github/workflows/daily-journal.yml` runs when a file under `entries/` is pushed to `main`, or manually via the **Actions** tab using `workflow_dispatch`.
 
 > [!NOTE]
-> GitHub Actions automatically caches the daily submission state (`.last_submission.json`) by date. If a scheduled run retries or is manually triggered on the same calendar date, it will safely skip execution to prevent duplicate form submissions.
+> GitHub Actions caches the daily submission state (`.last_submission.json`) by date. A second run on the same date skips execution to prevent duplicate form submissions.
 
 ---
 
@@ -190,12 +205,11 @@ npm test
 ```
 
 Test coverage includes:
-- `isSunday()` timezone calculations
-- `buildPrefilledUrl()` URL encoding & entry mapping
-- `getMidnightISO()` timezone-safe ISO timestamp generation
-- `generateCommitSummary()` fallback summary generation
+- `buildPrefilledUrl()` URL encoding
+- `entryToAnswers()` & `loadEntryAnswers()` entry validation
 - `hasAlreadySubmittedToday()` & `recordSubmissionSuccess()` date tracking
 - Dry-run & configuration parsing
+- `fillAndSubmitForm()` page flow against a local fake form (all network intercepted; skipped if Chromium is missing)
 
 ---
 
@@ -203,15 +217,11 @@ Test coverage includes:
 
 | Variable | Required | Description | Default |
 | :--- | :--- | :--- | :--- |
-| `FORM_ID` | Yes | Target Google Form ID or raw URL | Default Coursework Form |
+| `FORM_ID` | No (set it in a fork: the default targets the original author's form) | Target Google Form ID or raw URL | Default Coursework Form |
 | `TIMEZONE` | No | Target execution timezone | `Asia/Kolkata` |
 | `STORAGE_STATE_PATH` | No | Path to Playwright session file | `storageState.json` |
 | `DRY_RUN` / `DISABLE_SUBMIT` | No | Set to `true` to disable final submission click | `false` |
 | `ALLOW_MULTIPLE_SUBMISSIONS` | No | Set to `true` to force re-submission on the same day | `false` |
-| `GH_OWNER` | No | GitHub repo owner for commit activity | — |
-| `GH_REPO` | No | GitHub repo name for commit activity | — |
-| `GH_USERNAME` | No | Target GitHub username filter | — |
-| `GH_TOKEN` | No | GitHub PAT for commit API access | — |
 
 ---
 
