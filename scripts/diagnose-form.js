@@ -6,7 +6,7 @@ import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../src/config.js';
-import { buildPrefilledUrl, normalizeEntryMap } from '../src/urlBuilder.js';
+import { buildPrefilledUrl } from '../src/urlBuilder.js';
 
 const storagePath = path.resolve(config.storageStatePath);
 if (!fs.existsSync(storagePath)) {
@@ -16,10 +16,7 @@ if (!fs.existsSync(storagePath)) {
 
 const prefilledUrl = buildPrefilledUrl({
   formId: config.formId,
-  entryMap: {
-    ...normalizeEntryMap(config.entryMap),
-    'entry.32162408': 'Diagnostic run - test text',
-  },
+  answers: { 'entry.32162408': 'Diagnostic run - test text' },
 });
 
 let browser;

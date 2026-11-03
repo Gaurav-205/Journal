@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [2.0.0] - 2026-11-04
+
+### Changed
+- **Breaking**: the tool now files only entries you write in `entries/YYYY-MM-DD.json`. With no entry for today, nothing is submitted.
+- **Breaking**: the workflow runs when an entry is pushed instead of on a cron schedule, so entries land before the form's deadline.
+
+### Removed
+- Stock default answers, `ENTRY_MAP`, and generated commit summaries, plus `src/summarizer.js` and the `GH_*` settings. They reported attendance and work regardless of what happened that day.
+- `SKIP_DATES`, `LEAVE_DATES`, the delayed-cron guard, and the Sunday skip, which entries replace.
+
+---
+
 ## [1.2.0] - 2026-11-03
 
 ### Added

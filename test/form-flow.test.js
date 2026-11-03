@@ -4,11 +4,12 @@ import assert from 'node:assert';
 import test, { after } from 'node:test';
 import { chromium } from 'playwright';
 import { fillAndSubmitForm } from '../src/submit.js';
-import { DEFAULT_ANSWERS } from '../src/config.js';
+import { entryToAnswers } from '../src/entry.js';
 
 const FORM_URL = 'https://docs.google.com/forms/d/e/TEST/viewform';
 const RESPONSE_URL = 'https://docs.google.com/forms/d/e/TEST/formResponse';
-const ATTENDANCE = DEFAULT_ANSWERS['entry.187493348'];
+const ANSWERS = entryToAnswers({ status: 'present', tasks: 'Tasks', solved: 'Solved', unsolved: 'Unsolved', plan: 'Plan' });
+const ATTENDANCE = ANSWERS['entry.187493348'];
 const LEAVE = 'It was a working day, but I was on leave or absent';
 
 const question = (title, control) =>
@@ -84,36 +85,24 @@ after(async () => {
 
 test('fills every page with the right answer and verifies submission', { skip }, async () => {
   const { page, records } = await open();
-  const result = await fillAndSubmitForm(page, { answers: DEFAULT_ANSWERS, journalSummaryText: 'Commit summary' });
+  const result = await fillAndSubmitForm(page, { answers: ANSWERS });
 
   assert.strictEqual(result, 'submitted');
   assert.strictEqual(records.at(0).radio, ATTENDANCE, 'must pick the exact option, not the first containing "working"');
-  assert.deepStrictEqual(records.at(1).values, [
-    'Commit summary',
-    DEFAULT_ANSWERS['entry.1874357572'],
-    DEFAULT_ANSWERS['entry.199221807'],
-    DEFAULT_ANSWERS['entry.1546753981'],
-  ]);
+  assert.deepStrictEqual(records.at(1).values, ['Tasks', 'Solved', 'Unsolved', 'Plan']);
   assert.ok(records.at(2).url.includes('done=1'));
-});
-
-test('custom Key Tasks answer is not overwritten by the summary', { skip }, async () => {
-  const { page, records } = await open();
-  const answers = { ...DEFAULT_ANSWERS, 'entry.32162408': 'My real tasks' };
-  await fillAndSubmitForm(page, { answers, journalSummaryText: 'Commit summary' });
-  assert.strictEqual(records.at(1).values[0], 'My real tasks');
 });
 
 test('dry run never clicks Submit', { skip }, async () => {
   const { page, records } = await open();
-  const result = await fillAndSubmitForm(page, { answers: DEFAULT_ANSWERS, dryRun: true });
+  const result = await fillAndSubmitForm(page, { answers: ANSWERS, dryRun: true });
   assert.strictEqual(result, 'dry-run');
   assert.ok(!records.some((r) => r.url.includes('done=1')));
 });
 
 test('reports a validation error instead of looping when an option does not exist', { skip }, async () => {
   const { page } = await open();
-  const answers = { ...DEFAULT_ANSWERS, 'entry.187493348': 'No such option' };
+  const answers = { ...ANSWERS, 'entry.187493348': 'No such option' };
   await assert.rejects(fillAndSubmitForm(page, { answers }), /required question/);
 });
 
@@ -131,11 +120,11 @@ test('a leave day selects the leave option and types no work answers', { skip },
 
 test('throws when the form has no Submit button, e.g. closed form', { skip }, async () => {
   const { page } = await open({ [FORM_URL]: '<html><body>This form is no longer accepting responses. Your response was recorded.</body></html>' });
-  await assert.rejects(fillAndSubmitForm(page, { answers: DEFAULT_ANSWERS }), /nothing was submitted/);
+  await assert.rejects(fillAndSubmitForm(page, { answers: ANSWERS }), /nothing was submitted/);
 });
 
 test('throws when clicking Submit leaves the form in place', { skip }, async () => {
   const stuck = `<html><body>Your email address will be recorded when you submit this form<div role="button">Submit</div></body></html>`;
   const { page } = await open({ [FORM_URL]: stuck });
-  await assert.rejects(fillAndSubmitForm(page, { answers: DEFAULT_ANSWERS }), /could not be verified/);
+  await assert.rejects(fillAndSubmitForm(page, { answers: ANSWERS }), /could not be verified/);
 });

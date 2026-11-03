@@ -2,15 +2,10 @@ import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { config, DEFAULT_ANSWERS } from './config.js';
-import { generateCommitSummary, getFormattedToday } from './summarizer.js';
-import { buildPrefilledUrl, normalizeEntryMap, resolveAnswer } from './urlBuilder.js';
+import { config } from './config.js';
+import { ATTENDANCE_ENTRY, QUESTION_KEYS, getFormattedToday, loadEntryAnswers } from './entry.js';
+import { buildPrefilledUrl } from './urlBuilder.js';
 
-const ATTENDANCE_ENTRY = 'entry.187493348';
-const LEAVE_OPTION = 'It was a working day, but I was on leave or absent';
-// The form rejects backdated entries, and GitHub delays cron runs by hours. A delayed run landing
-// in the small hours would file a report for a day that has barely started.
-const EARLIEST_SCHEDULED_HOUR = 12;
 const MAX_PAGES = 15;
 
 /**
@@ -56,51 +51,11 @@ export function recordSubmissionSuccess(timezone = 'Asia/Kolkata', referenceDate
 }
 
 /**
- * Checks if today is Sunday in the target timezone.
- */
-export function isSunday(timezone = 'Asia/Kolkata', referenceDate = new Date()) {
-  const refDate = referenceDate instanceof Date && !isNaN(referenceDate.getTime()) ? referenceDate : new Date();
-  let tz = timezone;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-  } catch {
-    tz = 'Asia/Kolkata';
-  }
-
-  const dayStr = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    weekday: 'short',
-  }).format(refDate);
-  return dayStr === 'Sun';
-}
-
-/**
- * True when today (in the target timezone) is listed in skipDates (YYYY-MM-DD),
- * e.g. holidays or days off, when no journal entry should be filed.
- */
-export function isSkippedDate(skipDates = [], timezone = 'Asia/Kolkata', referenceDate = new Date()) {
-  return skipDates.includes(getFormattedToday(timezone, referenceDate));
-}
-
-/**
- * Hour of day (0-23) in the target timezone.
- */
-export function getLocalHour(timezone = 'Asia/Kolkata', referenceDate = new Date()) {
-  let tz = timezone;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-  } catch {
-    tz = 'Asia/Kolkata';
-  }
-  return parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hourCycle: 'h23' }).format(referenceDate), 10);
-}
-
-/**
- * Decides which configured answer a text field receives. Returns null when the field
+ * Decides which written answer a text field receives. Returns null when the field
  * cannot be identified, so unknown questions are left blank and fail form validation
  * instead of receiving an unrelated answer.
  */
-export function pickFieldKey({ name = '', heading = '', pageNum, position }, knownKeys = Object.keys(DEFAULT_ANSWERS)) {
+export function pickFieldKey({ name = '', heading = '', pageNum, position }, knownKeys = QUESTION_KEYS) {
   for (const key of knownKeys) {
     const id = key.replace('entry.', '');
     if (new RegExp(`\\b${id}\\b`).test(name)) return key;
@@ -115,7 +70,7 @@ export function pickFieldKey({ name = '', heading = '', pageNum, position }, kno
   if (/\btasks?\b|\bkey\b|\bwork/.test(h)) return 'entry.32162408';
 
   // Position fallback: the form asks all four questions, in this order, on page 2.
-  if (pageNum === 2) return ['entry.32162408', 'entry.1874357572', 'entry.199221807', 'entry.1546753981'][position] ?? null;
+  if (pageNum === 2) return QUESTION_KEYS[position] ?? null;
   return null;
 }
 
@@ -131,7 +86,7 @@ async function throwOnValidationErrors(page) {
   }
 }
 
-async function fillCurrentPage(page, answers, journalSummaryText, pageNum) {
+async function fillCurrentPage(page, answers, pageNum) {
   // 0. Handle "Continue current draft?" dialog modal if present
   const continueBtn = page.locator(
     'div[role="dialog"] button:has-text("Continue"), div[role="dialog"] div[role="button"]:has-text("Continue"), div[role="dialog"] button:has-text("Restore"), div[role="dialog"] div[role="button"]:has-text("Restore")'
@@ -165,20 +120,20 @@ async function fillCurrentPage(page, answers, journalSummaryText, pageNum) {
     }
   }
 
-  // 2. Radio option: only ever the exact configured answer, never a fuzzy match
-  const configuredOption = answers[ATTENDANCE_ENTRY];
-  if (configuredOption) {
-    const radio = page.getByRole('radio', { name: String(configuredOption), exact: true }).first();
+  // 2. Radio option: only ever the exact written answer, never a fuzzy match
+  const attendanceOption = answers[ATTENDANCE_ENTRY];
+  if (attendanceOption) {
+    const radio = page.getByRole('radio', { name: String(attendanceOption), exact: true }).first();
     if (await visibleWithin(radio, 1000)) {
       if ((await radio.getAttribute('aria-checked').catch(() => 'false')) !== 'true') {
-        console.log(`  [ACTION] Selecting configured option "${configuredOption}"`);
+        console.log(`  [ACTION] Selecting configured option "${attendanceOption}"`);
         await radio.click({ force: true });
         await page.waitForTimeout(500);
       }
     }
   }
 
-  // 3. Fill empty text inputs / textareas. Email inputs are excluded: no configured answer fits them.
+  // 3. Fill empty text inputs / textareas. Email inputs are excluded: no written answer fits them.
   const textFields = page.locator(
     'textarea, input[type="text"]:not([readonly]), input[type="url"]:not([readonly]), input:not([type]):not([readonly])'
   );
@@ -205,15 +160,14 @@ async function fillCurrentPage(page, answers, journalSummaryText, pageNum) {
       .catch(() => ({ name: '', heading: '' }));
 
     const key = pickFieldKey({ name, heading, pageNum, position }, Object.keys(answers));
-    const answer = key && key in answers ? resolveAnswer(key, answers[key], journalSummaryText) : '';
-    if (answer === '' || answer === null || answer === undefined) {
-      console.warn(`  [WARN] No configured answer for field "${heading.slice(0, 60)}" (page ${pageNum}). Left blank.`);
+    const answer = key ? answers[key] : '';
+    if (!answer) {
+      console.warn(`  [WARN] No written answer for field "${heading.slice(0, 60)}" (page ${pageNum}). Left blank.`);
       continue;
     }
 
-    const answerText = String(answer);
-    console.log(`  [FIELD] Filled [${key}] (Page ${pageNum}): "${answerText.substring(0, 45)}..."`);
-    await field.fill(answerText);
+    console.log(`  [FIELD] Filled [${key}] (Page ${pageNum})`);
+    await field.fill(answer);
   }
 }
 
@@ -224,7 +178,7 @@ async function fillCurrentPage(page, answers, journalSummaryText, pageNum) {
  *
  * @returns {Promise<'submitted'|'dry-run'>}
  */
-export async function fillAndSubmitForm(page, { answers, journalSummaryText = '', dryRun = false, takeScreenshot = async () => {} }) {
+export async function fillAndSubmitForm(page, { answers, dryRun = false, takeScreenshot = async () => {} }) {
   const submitButton = page
     .getByRole('button', { name: /^submit$|^submit response$|^send$|^bhejein$/i })
     .or(page.locator('div[role="button"]:has-text("Submit")'))
@@ -235,7 +189,7 @@ export async function fillAndSubmitForm(page, { answers, journalSummaryText = ''
     .first();
 
   let pageCount = 1;
-  await fillCurrentPage(page, answers, journalSummaryText, pageCount);
+  await fillCurrentPage(page, answers, pageCount);
   await takeScreenshot('initial');
 
   for (let remaining = MAX_PAGES; remaining > 0; remaining--) {
@@ -279,7 +233,7 @@ export async function fillAndSubmitForm(page, { answers, journalSummaryText = ''
     await throwOnValidationErrors(page);
 
     pageCount++;
-    await fillCurrentPage(page, answers, journalSummaryText, pageCount);
+    await fillCurrentPage(page, answers, pageCount);
   }
 
   throw new Error(
@@ -294,25 +248,7 @@ async function runScheduledSubmission() {
     console.log('[WARN] [DRY RUN MODE ENABLED] Form submission is disabled via configuration (DRY_RUN / DISABLE_SUBMIT).\n');
   }
 
-  // 1. Skip on Sundays
-  if (isSunday(config.timezone)) {
-    console.log(`[SKIP] Today is Sunday in ${config.timezone}. Skipping journal submission as scheduled.`);
-    process.exit(0);
-  }
-
-  // 1a. Skip holidays / days off listed in SKIP_DATES
-  if (isSkippedDate(config.skipDates, config.timezone)) {
-    console.log(`[SKIP] ${getFormattedToday(config.timezone)} is listed in SKIP_DATES. Nothing submitted.`);
-    process.exit(0);
-  }
-
-  // 1a-ii. A delayed scheduled run must not file for a day that has barely started
-  if (process.env.GITHUB_EVENT_NAME === 'schedule' && getLocalHour(config.timezone) < EARLIEST_SCHEDULED_HOUR) {
-    console.log(`::warning::Scheduled run arrived too late (now ${getFormattedToday(config.timezone)}, ${getLocalHour(config.timezone)}:00 in ${config.timezone}). Nothing submitted.`);
-    process.exit(0);
-  }
-
-  // 1b. Skip if already submitted today (unless force/allowMultipleSubmissions is set; a dry run submits nothing)
+  // 1. Skip if already submitted today (unless force/allowMultipleSubmissions is set; a dry run submits nothing)
   if (!config.dryRun && !config.allowMultipleSubmissions && hasAlreadySubmittedToday(config.timezone)) {
     const today = getFormattedToday(config.timezone);
     console.log(`[SKIP] Coursework journal has already been submitted today (${today}) in ${config.timezone}. Skipping duplicate execution.`);
@@ -327,50 +263,23 @@ async function runScheduledSubmission() {
     process.exit(1);
   }
 
-  // 3. Validate configuration
-  if (!config.formId) {
-    console.error('[ERROR] FORM_ID environment variable is missing.');
-    process.exit(1);
+  // 3. File only what was written for today. No entry means nothing to report.
+  const today = getFormattedToday(config.timezone);
+  const answers = loadEntryAnswers(today);
+  if (!answers) {
+    console.log(`[SKIP] No entry at entries/${today}.json. Nothing submitted.`);
+    process.exit(0);
   }
 
-  // A day of leave reports only that: no work answers are prefilled or typed.
-  const onLeave = isSkippedDate(config.leaveDates, config.timezone);
-  const leaveAnswers = { [ATTENDANCE_ENTRY]: LEAVE_OPTION };
-
-  // 4. Fetch Commit Activity & Generate Summary
-  let journalSummaryText = '';
-  if (onLeave) {
-    console.log(`[INFO] ${getFormattedToday(config.timezone)} is listed in LEAVE_DATES. Reporting leave.`);
-  } else if (config.githubOwner && config.githubRepo) {
-    console.log(`Fetching commit summary for ${config.githubOwner}/${config.githubRepo}...`);
-    journalSummaryText = await generateCommitSummary({
-      owner: config.githubOwner,
-      repo: config.githubRepo,
-      username: config.githubUsername,
-      token: config.commitReadToken,
-      timezone: config.timezone,
-    });
-  } else {
-    journalSummaryText = await generateCommitSummary({ timezone: config.timezone });
-  }
-
-  if (!onLeave) {
-    console.log('\n--- Generated Journal Entry ---');
-    console.log(journalSummaryText);
-    console.log('-------------------------------\n');
-  }
-
-  // 5. Construct Pre-filled Form URL
+  // 4. Construct Pre-filled Form URL
   const prefilledUrl = buildPrefilledUrl({
     formId: config.formId,
-    entryMap: onLeave ? leaveAnswers : config.entryMap,
-    journalSummaryText,
-    includeDefaults: !onLeave,
+    answers,
   });
 
   console.log(`Navigating to pre-filled Google Form URL...`);
 
-  // 6. Launch Headless Browser with Restored Session
+  // 5. Launch Headless Browser with Restored Session
   const userAgent =
     process.env.CUSTOM_USER_AGENT ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -440,8 +349,7 @@ async function runScheduledSubmission() {
     }
 
     const result = await fillAndSubmitForm(page, {
-      answers: onLeave ? leaveAnswers : normalizeEntryMap(config.entryMap),
-      journalSummaryText,
+      answers,
       dryRun: config.dryRun,
       takeScreenshot,
     });

@@ -1,9 +1,11 @@
 name: Daily Coursework Journal Submission
 
+# Runs when a written entry is pushed, so it is filed right away. Scheduled runs started
+# 5-10 hours late, past the form's 11:59 PM deadline.
 on:
-  schedule:
-    # 4:00 PM IST (16:00 IST) = 10:30 AM UTC, Monday–Friday only
-    - cron: '30 10 * * 1-5'
+  push:
+    branches: [ main ]
+    paths: [ 'entries/**' ]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -72,7 +74,7 @@ jobs:
 
       - name: Get current date in target timezone
         id: date
-        run: echo "today=$(node -e 'import("./src/summarizer.js").then(m => console.log(m.getFormattedToday(process.env.TIMEZONE || "Asia/Kolkata")))')" >> $GITHUB_OUTPUT
+        run: echo "today=$(node -e 'import("./src/entry.js").then(m => console.log(m.getFormattedToday(process.env.TIMEZONE || "Asia/Kolkata")))')" >> $GITHUB_OUTPUT
         env:
           TIMEZONE: ${{ secrets.TIMEZONE }}
 
@@ -85,14 +87,6 @@ jobs:
       - name: Run Journal Submission Script
         env:
           FORM_ID: ${{ secrets.FORM_ID }}
-          ENTRY_MAP: ${{ secrets.ENTRY_MAP }}
-          SKIP_DATES: ${{ vars.SKIP_DATES }}
-          LEAVE_DATES: ${{ vars.LEAVE_DATES }}
-          GH_OWNER: ${{ secrets.GH_OWNER }}
-          GH_REPO: ${{ secrets.GH_REPO }}
-          GH_USERNAME: ${{ secrets.GH_USERNAME }}
-          COMMIT_READ_TOKEN: ${{ secrets.COMMIT_READ_TOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           TIMEZONE: ${{ secrets.TIMEZONE }}
           STORAGE_STATE_PATH: storageState.json
           DRY_RUN: ${{ inputs.dry_run }}

@@ -118,4 +118,4 @@ Ensure all tests in `test/` pass with 0 errors before requesting a PR review.
 ## Security Reminders
 
 - **NEVER** commit `storageState.json` or `.env` files.
-- Ensure all personal tokens (`GH_TOKEN`, `COMMIT_READ_TOKEN`) are masked in issue descriptions and PR logs.
+- Ensure all personal tokens are masked in issue descriptions and PR logs.
