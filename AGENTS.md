@@ -61,9 +61,9 @@
 ### 2. `src/urlBuilder.js` — Pre-filled URL Constructor
 - `buildPrefilledUrl({ formId, answers })`: Accepts a raw ID or form URL and encodes the answers into a pre-filled URL.
 
-### 3. `src/entry.js` — Written Entries
-- `loadEntryAnswers(date)`: Reads `entries/<date>.json`. Returns `null` when none exists, and then nothing is filed.
-- `entryToAnswers(entry)`: Validates an entry and maps it to form fields. Throws on incomplete entries. Never add default or generated answers: the tool files only what the user wrote.
+### 3. `src/entry.js` — Entries & Default Answers
+- `loadEntryAnswers(date)`: Reads `entries/<date>.json`, falls back to `entries/default.json`, then `DEFAULT_ENTRY`. Pass `fallback=false` to return `null` when no file exists.
+- `entryToAnswers(entry)`: Validates an entry and maps it to form fields. Throws on incomplete entries.
 - `getFormattedToday(timezone, date)`: Formats date as `YYYY-MM-DD`.
 
 ### 4. `src/submit.js` — Playwright Automation Engine

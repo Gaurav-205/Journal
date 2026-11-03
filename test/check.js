@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getFormattedToday, entryToAnswers, loadEntryAnswers, ATTENDANCE_ENTRY } from '../src/entry.js';
+import { getFormattedToday, entryToAnswers, loadEntryAnswers, ATTENDANCE_ENTRY, DEFAULT_ENTRY } from '../src/entry.js';
 import { buildPrefilledUrl } from '../src/urlBuilder.js';
 import { pickFieldKey, hasAlreadySubmittedToday, recordSubmissionSuccess, getSubmissionStatePath } from '../src/submit.js';
 import { config } from '../src/config.js';
@@ -115,14 +115,35 @@ test('entryToAnswers rejects incomplete entries and unknown statuses', () => {
   assert.throws(() => entryToAnswers(null), /status/);
 });
 
-test('loadEntryAnswers returns null with no file and fails on bad JSON', () => {
+test('DEFAULT_ENTRY is complete and maps to all form fields', () => {
+  const answers = entryToAnswers(DEFAULT_ENTRY);
+  assert.strictEqual(answers[ATTENDANCE_ENTRY], 'It was a working day, and I was present');
+  assert.ok(answers['entry.32162408']);
+  assert.ok(answers['entry.1874357572']);
+  assert.ok(answers['entry.199221807']);
+  assert.ok(answers['entry.1546753981']);
+});
+
+test('loadEntryAnswers handles date entries, default.json, and fallback', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entries-'));
   try {
-    assert.strictEqual(loadEntryAnswers('2026-11-04', dir), null);
+    // With fallback=false and empty dir -> returns null
+    assert.strictEqual(loadEntryAnswers('2026-11-04', dir, false), null);
 
+    // With fallback=true and empty dir -> returns built-in DEFAULT_ENTRY
+    const defaultAnswers = loadEntryAnswers('2026-11-04', dir, true);
+    assert.strictEqual(defaultAnswers[ATTENDANCE_ENTRY], 'It was a working day, and I was present');
+    assert.strictEqual(defaultAnswers['entry.32162408'], DEFAULT_ENTRY.tasks);
+
+    // With default.json in dir -> returns default.json answers
+    fs.writeFileSync(path.join(dir, 'default.json'), JSON.stringify({ ...fullEntry, tasks: 'custom-default' }));
+    assert.strictEqual(loadEntryAnswers('2026-11-04', dir)['entry.32162408'], 'custom-default');
+
+    // With specific date file -> date file overrides default.json
     fs.writeFileSync(path.join(dir, '2026-11-04.json'), JSON.stringify(fullEntry));
     assert.strictEqual(loadEntryAnswers('2026-11-04', dir)['entry.32162408'], 'a');
 
+    // Bad JSON throws descriptive error
     fs.writeFileSync(path.join(dir, '2026-11-05.json'), '{oops');
     assert.throws(() => loadEntryAnswers('2026-11-05', dir), /not valid JSON/);
   } finally {

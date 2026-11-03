@@ -7,23 +7,26 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License" /></a>
 </p>
 
-Files the daily coursework journal entries **you write** to a Google Form, using **Node.js (ES Modules)**, **Playwright Chromium**, and **GitHub Actions**. Commit an entry for today and it is submitted within minutes. With no entry, nothing is filed: the tool never reports attendance or work on its own.
+Files daily coursework journal entries to a Google Form automatically, using **Node.js (ES Modules)**, **Playwright Chromium**, and **GitHub Actions**. Runs on a Mon–Fri schedule with configured default answers (`entries/default.json`), with optional support for daily written entries (`entries/YYYY-MM-DD.json`).
 
-## Writing a Daily Entry
+## Daily Submission & Default Answers
 
-Create `entries/YYYY-MM-DD.json` for today's date and push it to `main`:
+By default, the workflow runs Monday–Friday at 4:00 PM IST (10:30 AM UTC) and fills the journal using `entries/default.json` (or built-in defaults).
+
+You can edit `entries/default.json` to customize your regular default answers:
 
 ```json
 {
   "status": "present",
-  "tasks": "What were your key tasks for the day?",
-  "solved": "What challenges/problems did you solve today?",
-  "unsolved": "What challenges/problems were you NOT able to solve today?",
-  "plan": "What is your plan for the next day?"
+  "tasks": "Worked on assigned tasks as per the daily plan...",
+  "solved": "Encountered a few technical issues...",
+  "unsolved": "A few issues/tasks are still in progress...",
+  "plan": "Continue working on the pending tasks..."
 }
 ```
 
-On a working day when you were on leave or absent, use `{ "status": "leave" }`. On campus holidays and unscheduled days, write nothing. The form rejects backdated entries, so an entry only files on its own date. Incomplete entries fail the run and are not filed.
+### Overriding for a Specific Date
+To override the default answers on any specific date, create `entries/YYYY-MM-DD.json` (e.g. `{ "status": "leave" }` when absent, or custom tasks). When present, the date-specific entry takes priority over default answers.
 
 > [!WARNING]
 > Pushed entries are as visible as your repository. In a public repository anyone can read them, so keep yours private if they should stay between you and your program.

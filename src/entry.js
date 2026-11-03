@@ -17,6 +17,18 @@ const STATUS_OPTIONS = {
   leave: 'It was a working day, but I was on leave or absent',
 };
 
+export const DEFAULT_ENTRY = {
+  status: 'present',
+  tasks:
+    'Worked on assigned tasks as per the daily plan, including reviewing requirements, implementing planned features/modules, and testing the changes made. Coordinated with the team wherever required and updated task status accordingly.',
+  solved:
+    'Encountered a few technical issues during implementation/testing, which were resolved by debugging the code, referring to documentation, and testing alternate approaches. Also resolved minor doubts regarding task requirements through self-analysis and review of existing resources.',
+  unsolved:
+    'A few issues/tasks are still in progress and could not be fully completed today due to their complexity or dependency on further testing/review. These will be prioritized and worked on in the coming days.',
+  plan:
+    'Continue working on the pending tasks from today, complete testing/review of the current module, and move forward with the next set of planned tasks as per the schedule.',
+};
+
 /**
  * Formats a date as YYYY-MM-DD in the target timezone.
  */
@@ -59,17 +71,32 @@ export function entryToAnswers(entry) {
 }
 
 /**
- * Loads entries/<date>.json. Returns null when no entry was written for that date.
+ * Loads entries/<date>.json if present, then entries/default.json, or falls back
+ * to DEFAULT_ENTRY. Pass fallback=false to return null when no file exists.
  */
-export function loadEntryAnswers(date, dir = 'entries') {
-  const file = path.resolve(dir, `${date}.json`);
-  if (!fs.existsSync(file)) return null;
-
-  let entry;
-  try {
-    entry = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (err) {
-    throw new Error(`${file} is not valid JSON: ${err.message}`);
+export function loadEntryAnswers(date, dir = 'entries', fallback = true) {
+  const dateFile = path.resolve(dir, `${date}.json`);
+  if (fs.existsSync(dateFile)) {
+    let entry;
+    try {
+      entry = JSON.parse(fs.readFileSync(dateFile, 'utf8'));
+    } catch (err) {
+      throw new Error(`${dateFile} is not valid JSON: ${err.message}`);
+    }
+    return entryToAnswers(entry);
   }
-  return entryToAnswers(entry);
+
+  const defaultFile = path.resolve(dir, 'default.json');
+  if (fs.existsSync(defaultFile)) {
+    let entry;
+    try {
+      entry = JSON.parse(fs.readFileSync(defaultFile, 'utf8'));
+    } catch (err) {
+      throw new Error(`${defaultFile} is not valid JSON: ${err.message}`);
+    }
+    return entryToAnswers(entry);
+  }
+
+  if (!fallback) return null;
+  return entryToAnswers(DEFAULT_ENTRY);
 }

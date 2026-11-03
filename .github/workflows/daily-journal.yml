@@ -3,15 +3,18 @@ name: Daily Coursework Journal Submission
 # Runs when a written entry is pushed, so it is filed right away. Scheduled runs started
 # 5-10 hours late, past the form's 11:59 PM deadline.
 on:
-  push:
-    branches: [ main ]
-    paths: [ 'entries/**' ]
+  schedule:
+    # 4:00 PM IST (16:00 IST) = 10:30 AM UTC, Monday–Friday
+    - cron: '30 10 * * 1-5'
   workflow_dispatch:
     inputs:
       dry_run:
         description: 'Fill the form without submitting'
         type: boolean
         default: false
+  push:
+    branches: [ main ]
+    paths: [ 'entries/**' ]
 
 permissions:
   contents: read

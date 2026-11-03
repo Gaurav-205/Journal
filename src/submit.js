@@ -272,11 +272,21 @@ async function runScheduledSubmission() {
     process.exit(1);
   }
 
-  // 3. File only what was written for today. No entry means nothing to report.
+  // 3. Resolve answers: load date entry, default.json, or built-in default answers
   const today = getFormattedToday(config.timezone);
+  const dateFile = path.resolve('entries', `${today}.json`);
+  const defaultFile = path.resolve('entries', 'default.json');
+  if (fs.existsSync(dateFile)) {
+    console.log(`[INFO] Loaded written daily entry from entries/${today}.json.`);
+  } else if (fs.existsSync(defaultFile)) {
+    console.log(`[INFO] Loaded default entry from entries/default.json.`);
+  } else {
+    console.log(`[INFO] Using built-in default answers for ${today}.`);
+  }
+
   const answers = loadEntryAnswers(today);
   if (!answers) {
-    console.log(`[SKIP] No entry at entries/${today}.json. Nothing submitted.`);
+    console.log(`[SKIP] No entry answers available for ${today}. Nothing submitted.`);
     process.exit(0);
   }
 
