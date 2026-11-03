@@ -41,7 +41,8 @@
 │   ├── urlBuilder.js         # Pre-filled Google Form URL constructor & parameter encoder
 │   └── submit.js             # Headless Playwright runner, form filler & Sunday check
 ├── test/
-│   └── check.js              # Native Node.js unit test runner checks (node --test)
+│   ├── check.js              # Native Node.js unit test runner checks (node --test)
+│   └── form-flow.test.js     # Browser tests against a local fake form (network fully intercepted)
 ├── .env.example              # Template environment file
 ├── .gitignore                # Git exclusions (node_modules, .env, storageState.json, screenshots)
 ├── package.json              # Project manifest, dependencies, and script definitions
@@ -79,10 +80,12 @@
 - **Purpose**: Main execution entrypoint for headless browser form interaction.
 - **Key Logic**:
   - `isSunday(timezone, date)`: Returns `true` if current day is Sunday in target timezone to skip weekend executions cleanly (`exit 0`).
+  - `isSkippedDate(dates, timezone, date)`: Returns `true` for dates listed in `SKIP_DATES` (file nothing) or `LEAVE_DATES` (report the leave option, no work answers).
   - `hasAlreadySubmittedToday(timezone, date)`: Checks `.last_submission.json` to prevent duplicate daily submissions when triggered multiple times on the same day.
   - `recordSubmissionSuccess(timezone, date)`: Writes `.last_submission.json` state file upon confirmed form submission.
-  - `fillCurrentPage()`: Automatically dismisses "Continue draft" modals, checks mandatory email consent checkboxes, selects working day radio options, and fills empty text inputs/textareas.
-  - Page Loop: Iterates through multi-section forms by locating `Next` and `Submit` buttons, saving progress screenshots to `screenshots/`.
+  - `pickFieldKey()`: Maps a text field to a configured answer by entry ID, then heading, then page position. Returns `null` for unknown fields, which stay blank so form validation fails loudly.
+  - `fillCurrentPage()`: Dismisses "Continue draft" modals, checks the email consent checkbox, selects the radio option exactly matching the configured answer, and fills empty text inputs/textareas.
+  - `fillAndSubmitForm()`: Iterates through multi-section forms via `Next` and `Submit`, saving progress screenshots to `screenshots/`. Returns only after a verified submission (Submit gone, no validation alerts, URL on `/formResponse`) and throws otherwise.
   - Dry Run Handling: Logs form validation success without triggering the final submit click when dry-run mode is active.
 
 ### 5. `scripts/login.js` & `scripts/diagnose-form.js` — Utility Tools
@@ -98,7 +101,7 @@ If CI/CD or local submission fails with `Authentication failed! redirected to Go
 1. Execute `npm run login` locally.
 2. Complete Google authentication in the spawned browser window.
 3. Press **[ENTER]** in terminal to generate a fresh `storageState.json`.
-4. Re-encode `storageState.json` to base64 (`base64 -w 0 storageState.json`) and update the `STORAGE_STATE_BASE64` secret in GitHub Repository Settings.
+4. Re-encode `storageState.json` to base64 (`base64 < storageState.json | tr -d '\n'`) and update the `STORAGE_STATE_BASE64` secret in GitHub Repository Settings.
 
 ### 2. Form Layout / DOM Selector Drift
 Google Forms periodically updates UI class names. If navigation fails:
@@ -106,7 +109,7 @@ Google Forms periodically updates UI class names. If navigation fails:
 2. Update selector strategies in `src/submit.js` maintaining multi-tier ARIA/role fallbacks (e.g. `getByRole('button')` combined with `locator('div[role="button"]')`).
 
 ### 3. Testing Directives
-Agents modifying core logic MUST run `npm test` before committing changes. All unit tests in `test/check.js` must pass with zero errors.
+Agents modifying core logic MUST run `npm test` before committing changes. All tests in `test/` must pass with zero errors. Never run `npm start` without `--dry-run` while testing: it files a real response. Browser tests in `test/form-flow.test.js` intercept all network traffic.
 
 ---
 

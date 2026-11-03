@@ -53,7 +53,7 @@ Enhancement suggestions are welcome! When proposing a new feature:
    ```
 3. **Make & Test Your Changes**:
    - Write clean, ES Module-compatible JavaScript.
-   - Add unit tests in `test/check.js` covering your new logic.
+   - Add tests in `test/` covering your new logic.
    - Run the test suite:
      ```bash
      npm test
@@ -111,7 +111,7 @@ All submitted code MUST pass the built-in Node.js test runner:
 npm test
 ```
 
-Ensure all unit tests in `test/check.js` pass with 0 errors before requesting a PR review.
+Ensure all tests in `test/` pass with 0 errors before requesting a PR review.
 
 ---
 

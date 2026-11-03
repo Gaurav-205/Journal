@@ -29,11 +29,14 @@ Instead, please report the vulnerability directly to the project maintainers:
 1. **Session Cookies (`storageState.json`)**:
    - `storageState.json` contains sensitive Google session authentication tokens.
    - **Never commit `storageState.json` to version control.** It is strictly listed in `.gitignore`.
-   - When deploying to CI/CD (GitHub Actions), encode the session to base64 (`base64 -w 0 storageState.json`) and inject it using encrypted Repository Secrets (`STORAGE_STATE_BASE64`).
+   - When deploying to CI/CD (GitHub Actions), encode the session to base64 (`base64 < storageState.json | tr -d '\n'`) and inject it using encrypted Repository Secrets (`STORAGE_STATE_BASE64`).
 
 2. **Personal Access Tokens (`GH_TOKEN`)**:
    - Limit token permissions to read-only commit access (`contents: read`).
    - Store GitHub tokens strictly in environment variables (`.env`) or GitHub Actions secrets.
 
-3. **Masking Sensitive Outputs**:
+3. **Screenshots**:
+   - Files in `screenshots/` show the signed-in email address and form contents. Never commit or upload them.
+
+4. **Masking Sensitive Outputs**:
    - Ensure logs, issues, and pull requests are sanitized to prevent accidental credential leakage.

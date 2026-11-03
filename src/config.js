@@ -11,8 +11,8 @@ export const DEFAULT_ANSWERS = {
   'entry.1546753981': 'Continue working on the pending tasks from today, complete testing/review of the current module, and move forward with the next set of planned tasks as per the schedule.',
 };
 
-function parseEntryMap() {
-  let envVal = process.env.ENTRY_MAP;
+export function parseEntryMap(rawValue = process.env.ENTRY_MAP) {
+  let envVal = rawValue;
   if (envVal) {
     envVal = envVal.trim();
     if ((envVal.startsWith("'") && envVal.endsWith("'")) || (envVal.startsWith('"') && envVal.endsWith('"'))) {
@@ -20,33 +20,43 @@ function parseEntryMap() {
     }
     if (!envVal) return DEFAULT_ANSWERS;
 
-    try {
-      const parsed = JSON.parse(envVal);
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        const result = { ...DEFAULT_ANSWERS };
-        for (const [key, val] of Object.entries(parsed)) {
-          const entryKey = key.startsWith('entry.') ? key : `entry.${key}`;
-          result[entryKey] = val;
-        }
-        return result;
-      }
-      if (typeof parsed === 'string') {
-        return parsed.startsWith('entry.') ? parsed : `entry.${parsed}`;
-      }
-    } catch {
-      if (/^(?:entry\.)?\d+$/.test(envVal)) {
-        return envVal.startsWith('entry.') ? envVal : `entry.${envVal}`;
-      }
+    if (/^(?:entry\.)?\d+$/.test(envVal)) {
+      return envVal.startsWith('entry.') ? envVal : `entry.${envVal}`;
     }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(envVal);
+    } catch {
+      parsed = undefined;
+    }
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const result = { ...DEFAULT_ANSWERS };
+      for (const [key, val] of Object.entries(parsed)) {
+        if (!/^(?:entry\.)?\d+$/.test(key)) {
+          throw new Error(`ENTRY_MAP key "${key}" is not an entry ID.`);
+        }
+        const entryKey = key.startsWith('entry.') ? key : `entry.${key}`;
+        result[entryKey] = val;
+      }
+      return result;
+    }
+    if (typeof parsed === 'string') {
+      return parsed.startsWith('entry.') ? parsed : `entry.${parsed}`;
+    }
+    // Falling back to defaults here would silently submit answers the user replaced.
+    throw new Error('ENTRY_MAP must be a JSON object of entry IDs to answers, or a single entry ID.');
   }
   return DEFAULT_ANSWERS;
 }
 
-const repoParts = process.env.GITHUB_REPOSITORY ? process.env.GITHUB_REPOSITORY.split('/') : [];
+export function parseDates(value = '') {
+  return value.split(',').map((d) => d.trim()).filter(Boolean);
+}
 
 export const config = {
-  githubOwner: process.env.GH_OWNER || process.env.GITHUB_OWNER || repoParts[0] || '',
-  githubRepo: process.env.GH_REPO || process.env.GITHUB_REPO || repoParts[1] || '',
+  githubOwner: process.env.GH_OWNER || process.env.GITHUB_OWNER || '',
+  githubRepo: process.env.GH_REPO || process.env.GITHUB_REPO || '',
   githubUsername: process.env.GH_USERNAME || process.env.GITHUB_USERNAME || '',
   commitReadToken: process.env.COMMIT_READ_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '',
 
@@ -55,6 +65,8 @@ export const config = {
   
   storageStatePath: process.env.STORAGE_STATE_PATH || 'storageState.json',
   timezone: process.env.TIMEZONE || 'Asia/Kolkata',
+  skipDates: parseDates(process.env.SKIP_DATES),
+  leaveDates: parseDates(process.env.LEAVE_DATES),
 
   dryRun:
     ['true', '1', 'yes'].includes(String(process.env.DRY_RUN || '').toLowerCase()) ||

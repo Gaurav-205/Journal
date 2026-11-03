@@ -27,34 +27,26 @@ export function getMidnightISO(timezone = 'Asia/Kolkata', referenceDate = new Da
   const day = parts.find((p) => p.type === 'day')?.value || '01';
   const year = parts.find((p) => p.type === 'year')?.value || '1970';
 
-  // Benchmark reference date for midnight UTC of target day
-  const refUtc = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
+  const wallClockMidnight = Date.UTC(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
 
-  // Calculate local timezone offset at refUtc
-  const tzParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(refUtc);
+  const offsetAt = (instantMs) => {
+    const tzParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(instantMs));
+    const part = (type) => parseInt(tzParts.find((p) => p.type === type).value, 10);
+    return Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second')) - instantMs;
+  };
 
-  const tzYear = parseInt(tzParts.find((p) => p.type === 'year')?.value || year, 10);
-  const tzMonth = parseInt(tzParts.find((p) => p.type === 'month')?.value || month, 10) - 1;
-  const tzDay = parseInt(tzParts.find((p) => p.type === 'day')?.value || day, 10);
-  let tzHour = parseInt(tzParts.find((p) => p.type === 'hour')?.value || '0', 10);
-  if (tzHour === 24) tzHour = 0;
-  const tzMinute = parseInt(tzParts.find((p) => p.type === 'minute')?.value || '0', 10);
-
-  const utcAsLocal = Date.UTC(tzYear, tzMonth, tzDay, tzHour, tzMinute, 0);
-  const offsetMs = utcAsLocal - refUtc.getTime();
-
-  // Target midnight UTC timestamp
-  const targetMidnightUtcMs = Date.UTC(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10), 0, 0, 0) - offsetMs;
-  return new Date(targetMidnightUtcMs).toISOString();
+  // Two passes: the first offset may be measured on the wrong side of a DST change.
+  const firstGuess = wallClockMidnight - offsetAt(wallClockMidnight);
+  return new Date(wallClockMidnight - offsetAt(firstGuess)).toISOString();
 }
 
 /**
@@ -96,8 +88,8 @@ export async function generateCommitSummary(opts = {}) {
   const defaultSummaryText =
     'Worked on assigned tasks as per the daily plan, including reviewing requirements, implementing planned features/modules, and testing the changes made. Coordinated with the team wherever required and updated task status accordingly.';
 
-  const owner = opts.owner || process.env.GH_OWNER || process.env.GITHUB_OWNER || process.env.GITHUB_REPOSITORY?.split('/')[0];
-  const repo = opts.repo || process.env.GH_REPO || process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY?.split('/')[1];
+  const owner = opts.owner || process.env.GH_OWNER || process.env.GITHUB_OWNER;
+  const repo = opts.repo || process.env.GH_REPO || process.env.GITHUB_REPO;
   const username = opts.username || process.env.GH_USERNAME || process.env.GITHUB_USERNAME;
   const token = opts.token || process.env.COMMIT_READ_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   const timezone = opts.timezone || 'Asia/Kolkata';
@@ -123,6 +115,7 @@ export async function generateCommitSummary(opts = {}) {
 
     const response = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
     if (!response.ok) {
+      console.warn(`Warning: GitHub API returned ${response.status} for ${owner}/${repo}. Using default summary.`);
       return defaultSummaryText;
     }
 
@@ -132,7 +125,8 @@ export async function generateCommitSummary(opts = {}) {
     }
 
     const commitMessages = commits
-      .map((c) => c.commit?.message?.split('\n')[0]?.trim())
+      .filter((c) => !(c.parents?.length > 1)) // merge commits describe no work of their own
+      .map((c) => c.commit?.message?.split('\n')[0]?.trim().replace(/\.+$/, ''))
       .filter(Boolean);
 
     if (commitMessages.length === 0) {
@@ -141,7 +135,8 @@ export async function generateCommitSummary(opts = {}) {
 
     const uniqueMessages = [...new Set(commitMessages)];
     return `Worked on daily tasks: ${uniqueMessages.join('; ')}. Tested changes and updated codebase.`;
-  } catch {
+  } catch (err) {
+    console.warn(`Warning: Could not fetch commits for ${owner}/${repo}: ${err.message}. Using default summary.`);
     return defaultSummaryText;
   }
 }

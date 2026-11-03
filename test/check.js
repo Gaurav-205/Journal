@@ -3,8 +3,8 @@ import test from 'node:test';
 import fs from 'node:fs';
 import { getMidnightISO, getFormattedToday, generateCommitSummary } from '../src/summarizer.js';
 import { buildPrefilledUrl } from '../src/urlBuilder.js';
-import { isSunday, hasAlreadySubmittedToday, recordSubmissionSuccess, getSubmissionStatePath } from '../src/submit.js';
-import { config } from '../src/config.js';
+import { isSunday, isSkippedDate, getLocalHour, pickFieldKey, hasAlreadySubmittedToday, recordSubmissionSuccess, getSubmissionStatePath } from '../src/submit.js';
+import { config, parseEntryMap, DEFAULT_ANSWERS } from '../src/config.js';
 
 test('isSunday correctly detects Sunday vs non-Sunday', () => {
   const sundayDate = new Date('2026-08-09T12:00:00Z');
@@ -140,3 +140,90 @@ test('config parses allowMultipleSubmissions setting correctly', () => {
   assert.strictEqual(typeof config.allowMultipleSubmissions, 'boolean');
 });
 
+test('isSkippedDate matches only listed dates in the target timezone', () => {
+  // 20:00 UTC on Nov 7 is already Nov 8 in Kolkata
+  const date = new Date('2026-11-07T20:00:00Z');
+  assert.strictEqual(isSkippedDate(['2026-11-08'], 'Asia/Kolkata', date), true);
+  assert.strictEqual(isSkippedDate(['2026-11-08'], 'UTC', date), false);
+  assert.strictEqual(isSkippedDate([], 'UTC', date), false);
+});
+
+test('pickFieldKey separates solved and unsolved challenge questions', () => {
+  assert.strictEqual(pickFieldKey({ heading: 'Challenges you could not solve' }), 'entry.199221807');
+  assert.strictEqual(pickFieldKey({ heading: 'What challenges did you solve?' }), 'entry.1874357572');
+  assert.strictEqual(pickFieldKey({ heading: 'Plan for the next day' }), 'entry.1546753981');
+  assert.strictEqual(pickFieldKey({ heading: 'Key tasks done today' }), 'entry.32162408');
+});
+
+test('pickFieldKey does not match words by substring', () => {
+  assert.strictEqual(pickFieldKey({ heading: 'Notes on your network', pageNum: 1, position: 0 }), null);
+  assert.strictEqual(pickFieldKey({ heading: 'Please explain', pageNum: 1, position: 0 }), null);
+});
+
+test('pickFieldKey matches exact entry IDs, including custom ones', () => {
+  assert.strictEqual(pickFieldKey({ name: 'entry.32162408' }), 'entry.32162408');
+  assert.strictEqual(pickFieldKey({ name: 'entry.555', pageNum: 1 }, ['entry.555']), 'entry.555');
+  assert.strictEqual(pickFieldKey({ name: 'entry.5551', pageNum: 1 }, ['entry.555']), null);
+});
+
+test('pickFieldKey position fallback covers the four page 2 questions only', () => {
+  assert.strictEqual(pickFieldKey({ pageNum: 2, position: 0 }), 'entry.32162408');
+  assert.strictEqual(pickFieldKey({ pageNum: 2, position: 1 }), 'entry.1874357572');
+  assert.strictEqual(pickFieldKey({ pageNum: 2, position: 2 }), 'entry.199221807');
+  assert.strictEqual(pickFieldKey({ pageNum: 2, position: 3 }), 'entry.1546753981');
+  assert.strictEqual(pickFieldKey({ pageNum: 2, position: 4 }), null);
+  assert.strictEqual(pickFieldKey({ pageNum: 3, position: 0 }), null);
+});
+
+test('pickFieldKey maps the real form question wording', () => {
+  assert.strictEqual(pickFieldKey({ heading: 'What were your key tasks for the day? *' }), 'entry.32162408');
+  assert.strictEqual(pickFieldKey({ heading: 'What challenges/problems did you solve today? *' }), 'entry.1874357572');
+  assert.strictEqual(pickFieldKey({ heading: 'What challenges/problems you were NOT able to solve today and are planning to solve in upcoming days? *' }), 'entry.199221807');
+  assert.strictEqual(pickFieldKey({ heading: 'What is your plan for the next day of Simulated Work? *' }), 'entry.1546753981');
+});
+
+test('getLocalHour reads the hour in the target timezone', () => {
+  assert.strictEqual(getLocalHour('Asia/Kolkata', new Date('2026-11-02T20:25:00Z')), 1);
+  assert.strictEqual(getLocalHour('Asia/Kolkata', new Date('2026-11-03T18:29:00Z')), 23);
+  assert.strictEqual(getLocalHour('UTC', new Date('2026-11-03T00:10:00Z')), 0);
+  assert.strictEqual(getLocalHour('Invalid/Timezone', new Date('2026-11-02T20:25:00Z')), 1);
+});
+
+test('getMidnightISO is correct on DST change days', () => {
+  // NZDT (+13) ends at 03:00 on 2026-04-05, so that midnight is still +13
+  assert.strictEqual(getMidnightISO('Pacific/Auckland', new Date('2026-04-05T10:00:00Z')), '2026-04-04T11:00:00.000Z');
+  assert.strictEqual(getMidnightISO('America/New_York', new Date('2026-03-08T15:00:00Z')), '2026-03-08T05:00:00.000Z');
+  assert.strictEqual(getMidnightISO('America/New_York', new Date('2026-11-01T15:00:00Z')), '2026-11-01T04:00:00.000Z');
+});
+
+test('buildPrefilledUrl sends only given entries when includeDefaults is false', () => {
+  const url = buildPrefilledUrl({ formId: 'TEST_ID', entryMap: { 'entry.187493348': 'Leave' }, includeDefaults: false });
+  assert.ok(url.includes('entry.187493348=Leave'));
+  assert.ok(!url.includes('entry.32162408'));
+});
+
+test('generateCommitSummary drops merge commits and trailing periods', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => [
+      { parents: [{}, {}], commit: { message: 'Merge branch main' } },
+      { parents: [{}], commit: { message: 'Fix login.\n\nbody' } },
+    ],
+  }));
+  const summary = await generateCommitSummary({ owner: 'o', repo: 'r' });
+  assert.strictEqual(summary, 'Worked on daily tasks: Fix login. Tested changes and updated codebase.');
+});
+
+test('parseEntryMap handles object, single ID and empty values', () => {
+  assert.strictEqual(parseEntryMap('{"123":"x"}')['entry.123'], 'x');
+  assert.strictEqual(parseEntryMap("'{\"entry.1\":\"y\"}'")['entry.1'], 'y');
+  assert.strictEqual(parseEntryMap('123'), 'entry.123');
+  assert.strictEqual(parseEntryMap('"entry.123"'), 'entry.123');
+  assert.strictEqual(parseEntryMap(''), DEFAULT_ANSWERS);
+});
+
+test('parseEntryMap rejects malformed values instead of using defaults', () => {
+  assert.throws(() => parseEntryMap('{not json'), /ENTRY_MAP/);
+  assert.throws(() => parseEntryMap('[1,2]'), /ENTRY_MAP/);
+  assert.throws(() => parseEntryMap('{"a(b":"x"}'), /ENTRY_MAP/);
+});
